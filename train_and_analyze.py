@@ -78,7 +78,7 @@ scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
 # Save preprocessors
-joblib.dump(scaler, 'models/scaler.pkl')
+joblib.dump(scaler, 'models/simple_scaler.pkl')
 
 # 4. Model Training
 X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
@@ -112,5 +112,5 @@ plt.savefig('analysis_reports/confusion_matrix.png')
 plt.close()
 
 # 6. Save Model
-joblib.dump(clf, 'models/impact_model.pkl')
+joblib.dump(clf, 'models/simple_impact_model.pkl')
 print("Model saved and analysis complete.")
