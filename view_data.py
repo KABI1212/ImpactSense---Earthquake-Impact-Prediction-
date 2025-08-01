@@ -31,11 +31,11 @@ else:
 
 print("\n" + "="*50)
 print("Detailed Data Inspection (First 50 Rows)")
-print("Columns: Magnitude, Latitude, Longitude, Depth, Soil_Type")
+print("Columns: Magnitude, Latitude, Longitude, Depth, Fault_Proximity")
 print("="*50)
 
 # Select specific columns for inspection as requested
-inspection_df = df[['Magnitude', 'Latitude', 'Longitude', 'Depth', 'Soil_Type']]
+inspection_df = df[['Magnitude', 'Latitude', 'Longitude', 'Depth', 'Fault_Proximity']]
 print(inspection_df.head(50))
 
 print("\n" + "="*50)
