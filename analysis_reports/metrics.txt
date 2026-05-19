@@ -1,0 +1,12 @@
+Model: Random Forest Classifier
+Accuracy: 63.70%
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.61      0.60      0.61       933
+           1       0.66      0.67      0.66      1067
+
+    accuracy                           0.64      2000
+   macro avg       0.64      0.63      0.64      2000
+weighted avg       0.64      0.64      0.64      2000

@@ -1,0 +1,107 @@
+======================================================================
+ImpactSense - Model Training Report
+Milestone 2: Weeks 3 & 4
+======================================================================
+
+DATASET INFO
+  Total Samples: 10000
+  Features: 14
+  Train/Test Split: 80/20
+
+CLASSIFICATION RESULTS
+----------------------------------------------------------------------
+Model                       Accuracy  Precision     Recall   F1-Score
+----------------------------------------------------------------------
+XGBoost                        66.40%      71.95%      65.66%      68.66%
+Gradient Boosting              65.65%      70.51%      66.55%      68.47%
+Logistic Regression            65.55%      70.69%      65.83%      68.18%
+Random Forest                  65.30%      70.87%      64.67%      67.63%
+Decision Tree                  64.90%      73.05%      59.23%      65.42%
+----------------------------------------------------------------------
+
+Best Model: XGBoost
+
+REGRESSION RESULTS (Risk Score)
+  Model: Gradient Boosting Regressor
+  MAE:  4.1153
+  MSE:  26.4479
+  RMSE: 5.1428
+  R²:   0.6295
+
+TOP FEATURES (by importance):
+  1. Mag_Depth_Ratio: 0.4838
+  2. Fault_Proximity: 0.1247
+  3. Magnitude: 0.0662
+  4. Mag_Depth_Product: 0.0619
+  5. Depth: 0.0500
+  6. Latitude: 0.0478
+  7. Fault_Category_Encoded: 0.0432
+  8. Geo_Cluster: 0.0427
+  9. Longitude: 0.0395
+  10. Magnitude_Category_Encoded: 0.0208
+
+CROSS-VALIDATION RESULTS (5-fold)
+  Logistic Regression: 65.32% (+/- 2.23%)
+  Decision Tree: 64.82% (+/- 2.84%)
+  Random Forest: 65.03% (+/- 2.18%)
+  Gradient Boosting: 65.42% (+/- 1.95%)
+  XGBoost: 65.56% (+/- 2.00%)
+
+
+DETAILED CLASSIFICATION REPORTS
+======================================================================
+
+Logistic Regression:
+              precision    recall  f1-score   support
+
+           0       0.60      0.65      0.62       879
+           1       0.71      0.66      0.68      1121
+
+    accuracy                           0.66      2000
+   macro avg       0.65      0.66      0.65      2000
+weighted avg       0.66      0.66      0.66      2000
+
+
+Decision Tree:
+              precision    recall  f1-score   support
+
+           0       0.58      0.72      0.64       879
+           1       0.73      0.59      0.65      1121
+
+    accuracy                           0.65      2000
+   macro avg       0.66      0.66      0.65      2000
+weighted avg       0.66      0.65      0.65      2000
+
+
+Random Forest:
+              precision    recall  f1-score   support
+
+           0       0.59      0.66      0.63       879
+           1       0.71      0.65      0.68      1121
+
+    accuracy                           0.65      2000
+   macro avg       0.65      0.65      0.65      2000
+weighted avg       0.66      0.65      0.65      2000
+
+
+Gradient Boosting:
+              precision    recall  f1-score   support
+
+           0       0.60      0.65      0.62       879
+           1       0.71      0.67      0.68      1121
+
+    accuracy                           0.66      2000
+   macro avg       0.65      0.66      0.65      2000
+weighted avg       0.66      0.66      0.66      2000
+
+
+XGBoost:
+              precision    recall  f1-score   support
+
+           0       0.61      0.67      0.64       879
+           1       0.72      0.66      0.69      1121
+
+    accuracy                           0.66      2000
+   macro avg       0.66      0.67      0.66      2000
+weighted avg       0.67      0.66      0.67      2000
+
