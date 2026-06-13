@@ -9,11 +9,26 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
 
+import joblib
+import pandas as pd
 import streamlit as st
+
+from impact_logic import (
+    ENGINEERED_FEATURE_COLUMNS,
+    build_driver_summary,
+    build_prediction_headline,
+    categorize_depth,
+    categorize_fault_proximity,
+    categorize_magnitude,
+    classify_risk_level,
+    encode_fault_category,
+    validate_inputs,
+)
 
 try:
     import pydeck as pdk
@@ -24,6 +39,8 @@ except ImportError:  # pragma: no cover - optional visualization dependency
 APP_TITLE = "ImpactSense - Earthquake Impact Predictor"
 BASE_DIR = Path(__file__).resolve().parent
 USERS_FILE = BASE_DIR / "users.json"
+MODELS_DIR = BASE_DIR / "models"
+PREPROCESSED_DATA_PATH = BASE_DIR / "data" / "earthquake_preprocessed.csv"
 BACKGROUND_IMAGE_CANDIDATES = (
     BASE_DIR / "assets" / "earthquake_background.jpg",
     BASE_DIR / "assets" / "earthquake_background.jpeg",
@@ -1070,6 +1087,103 @@ def initialize_session_state() -> None:
             st.session_state[key] = value
 
 
+@st.cache_resource(show_spinner=False)
+def load_prediction_resources() -> dict[str, Any]:
+    """Load trained prediction artifacts once per Streamlit process."""
+    feature_config = joblib.load(MODELS_DIR / "feature_config.pkl")
+    feature_columns = feature_config.get("feature_columns", ENGINEERED_FEATURE_COLUMNS)
+    if list(feature_columns) != ENGINEERED_FEATURE_COLUMNS:
+        raise ValueError("Feature configuration does not match impact_logic.ENGINEERED_FEATURE_COLUMNS.")
+
+    preprocessed = pd.read_csv(PREPROCESSED_DATA_PATH)
+    cluster_risk_scores = (
+        preprocessed.groupby("Geo_Cluster")["Risk_Score"].mean().astype(float).to_dict()
+    )
+    observed_ranges = {
+        "magnitude": (
+            float(preprocessed["Magnitude"].min()),
+            float(preprocessed["Magnitude"].max()),
+        ),
+        "depth": (
+            float(preprocessed["Depth"].min()),
+            float(preprocessed["Depth"].max()),
+        ),
+        "latitude": (
+            float(preprocessed["Latitude"].min()),
+            float(preprocessed["Latitude"].max()),
+        ),
+        "longitude": (
+            float(preprocessed["Longitude"].min()),
+            float(preprocessed["Longitude"].max()),
+        ),
+        "fault_proximity": (
+            float(preprocessed["Fault_Proximity"].min()),
+            float(preprocessed["Fault_Proximity"].max()),
+        ),
+    }
+
+    scaler = joblib.load(MODELS_DIR / "scaler.pkl")
+    scaler_feature_names = list(getattr(scaler, "feature_names_in_", ENGINEERED_FEATURE_COLUMNS))
+    if scaler_feature_names != ENGINEERED_FEATURE_COLUMNS:
+        raise ValueError("scaler.pkl was not fitted with ENGINEERED_FEATURE_COLUMNS.")
+
+    return {
+        "model": joblib.load(MODELS_DIR / "xgboost_model.pkl"),
+        "risk_regressor": joblib.load(MODELS_DIR / "risk_regressor.pkl"),
+        "scaler": scaler,
+        "label_encoder": joblib.load(MODELS_DIR / "label_encoder.pkl"),
+        "depth_encoder": joblib.load(MODELS_DIR / "depth_encoder.pkl"),
+        "magnitude_encoder": joblib.load(MODELS_DIR / "magnitude_encoder.pkl"),
+        "geo_kmeans": joblib.load(MODELS_DIR / "geo_kmeans.pkl"),
+        "feature_config": feature_config,
+        "cluster_risk_scores": cluster_risk_scores,
+        "observed_ranges": observed_ranges,
+        "fallback_location_risk_score": float(preprocessed["Risk_Score"].mean()),
+    }
+
+
+def build_engineered_feature_row(
+    payload: dict[str, float],
+    resources: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """Build one inference row using the same engineered features as preprocessing.py."""
+    resources = resources or load_prediction_resources()
+
+    depth_category = categorize_depth(payload["depth"])
+    magnitude_category = categorize_magnitude(payload["magnitude"])
+    fault_category = categorize_fault_proximity(payload["fault_proximity"])
+
+    geo_cluster = int(
+        resources["geo_kmeans"].predict([[payload["latitude"], payload["longitude"]]])[0]
+    )
+    location_risk_score = float(
+        resources["cluster_risk_scores"].get(
+            geo_cluster,
+            resources["fallback_location_risk_score"],
+        )
+    )
+
+    row = {
+        "Magnitude": float(payload["magnitude"]),
+        "Depth": float(payload["depth"]),
+        "Latitude": float(payload["latitude"]),
+        "Longitude": float(payload["longitude"]),
+        "Fault_Proximity": float(payload["fault_proximity"]),
+        "Depth_Category_Encoded": int(resources["depth_encoder"].transform([depth_category])[0]),
+        "Magnitude_Category_Encoded": int(
+            resources["magnitude_encoder"].transform([magnitude_category])[0]
+        ),
+        "Mag_Depth_Ratio": float(payload["magnitude"]) / (float(payload["depth"]) + 1.0),
+        "Mag_Depth_Product": float(payload["magnitude"]) * float(payload["depth"]),
+        "Log_Depth": math.log1p(float(payload["depth"])),
+        "Mag_Squared": float(payload["magnitude"]) ** 2,
+        "Geo_Cluster": geo_cluster,
+        "Location_Risk_Score": location_risk_score,
+        "Fault_Category_Encoded": encode_fault_category(fault_category),
+    }
+    return pd.DataFrame([row], columns=ENGINEERED_FEATURE_COLUMNS)
+
+
 def load_users() -> dict[str, dict[str, str]]:
     """Load locally stored user accounts."""
     if not USERS_FILE.exists():
@@ -1296,99 +1410,73 @@ def validate_signup_form(
     return errors
 
 
-def risk_step_up(level: str) -> str:
-    """Move the current risk level up by one step."""
-    if level == "No Risk":
-        return "Low Risk"
-    if level == "Low Risk":
-        return "Moderate Risk"
-    if level == "Moderate Risk":
-        return "High Risk"
-    return level
-
-
 def predict_impact(
     magnitude: float,
     depth: float,
     latitude: float,
     longitude: float,
+    fault_proximity: float,
 ) -> dict[str, Any]:
-    """Create a simple rule-based earthquake impact prediction."""
-    if magnitude > 6.0:
-        risk_level = "High Risk"
-    elif magnitude >= 4.5:
-        risk_level = "Moderate Risk"
-    elif magnitude >= 3.0:
-        risk_level = "Low Risk"
-    else:
-        risk_level = "No Risk"
-
-    if depth < 70:
-        risk_level = risk_step_up(risk_level)
-
-    base_scores = {
-        "No Risk": 0,
-        "Low Risk": 15,
-        "Moderate Risk": 45,
-        "High Risk": 90,
+    """Run the trained classifier and risk regressor for one earthquake scenario."""
+    payload = {
+        "magnitude": float(magnitude),
+        "depth": float(depth),
+        "latitude": float(latitude),
+        "longitude": float(longitude),
+        "fault_proximity": float(fault_proximity),
     }
-    impact_score = base_scores[risk_level]
-    reasons = [
-        f"Magnitude {magnitude:.1f} placed the event in the {risk_level.lower()} band.",
-    ]
+    resources = load_prediction_resources()
+    validation = validate_inputs(payload, resources["observed_ranges"])
+    if validation["errors"]:
+        raise ValueError(" ".join(validation["errors"]))
 
-    if depth < 70:
-        depth_bonus = min(8, int(round((70 - depth) * 0.12)))
-        impact_score += depth_bonus
-        reasons.append(
-            f"Depth at {depth:.1f} km adds a shallow-event boost of {depth_bonus} points.",
-        )
+    feature_row = build_engineered_feature_row(payload, resources)
+    scaled_features = resources["scaler"].transform(feature_row)
+
+    model = resources["model"]
+    predicted_class = int(model.predict(scaled_features)[0])
+    if hasattr(model, "predict_proba"):
+        class_probabilities = model.predict_proba(scaled_features)[0]
+        class_index = list(model.classes_).index(1) if 1 in model.classes_ else predicted_class
+        high_impact_probability = float(class_probabilities[class_index])
     else:
-        reasons.append(f"Depth at {depth:.1f} km keeps more energy away from the surface.")
+        high_impact_probability = float(predicted_class)
 
-    impact_score = int(round(min(100, impact_score) * 0.9))
-    reasons.append("The final score is softened slightly to stay conservative out of 100.")
+    raw_risk_score = float(resources["risk_regressor"].predict(scaled_features)[0])
+    impact_score = int(round(max(0.0, min(100.0, raw_risk_score))))
+    level = classify_risk_level(high_impact_probability, impact_score)
+    risk_level = f"{level} Risk"
+    headline = build_prediction_headline(level, high_impact_probability, impact_score)
+    reasons = build_driver_summary(payload, high_impact_probability, impact_score)
+    if validation["warnings"]:
+        reasons.append(validation["warnings"][0])
 
-    if impact_score < 25:
-        impact_band = "Low"
-    elif impact_score < 50:
-        impact_band = "Moderate"
-    else:
-        impact_band = "Elevated"
-
-    summary = f"This result lands in the {risk_level.lower()} range with an impact score of {impact_score}/100."
-
-    details = {
-        "High Risk": {
-            "message": "Strong shaking impact is likely. Emergency planning should be prioritized.",
-            "chip": "chip-high",
-        },
-        "Moderate Risk": {
-            "message": "Moderate regional impact is possible. Monitor conditions and local advisories.",
-            "chip": "chip-moderate",
-        },
-        "Low Risk": {
-            "message": "Current inputs suggest a lower earthquake impact scenario.",
-            "chip": "chip-low",
-        },
-        "No Risk": {
-            "message": "Current inputs suggest little to no immediate earthquake impact risk.",
-            "chip": "chip-none",
-        },
+    chip_by_level = {
+        "Low": "chip-low",
+        "Elevated": "chip-moderate",
+        "High": "chip-high",
+        "Severe": "chip-high",
     }
 
     return {
         "risk_level": risk_level,
-        "message": details[risk_level]["message"],
-        "chip": details[risk_level]["chip"],
+        "message": headline,
+        "chip": chip_by_level[level],
         "magnitude": magnitude,
         "depth": depth,
         "latitude": latitude,
         "longitude": longitude,
+        "fault_proximity": fault_proximity,
         "impact_score": impact_score,
-        "impact_band": impact_band,
-        "summary": summary,
+        "impact_band": level,
+        "summary": (
+            f"XGBoost predicted class {predicted_class} with "
+            f"{high_impact_probability * 100:.1f}% high-impact probability; "
+            f"the trained risk regressor estimated {raw_risk_score:.1f}/100."
+        ),
         "reasons": reasons,
+        "high_impact_probability": high_impact_probability,
+        "raw_risk_score": raw_risk_score,
     }
 
 
@@ -1896,8 +1984,9 @@ def show_prediction_result() -> None:
     reasons = prediction.get("reasons", [])
     fill_class = {
         "Low": "low",
-        "Moderate": "moderate",
         "Elevated": "high",
+        "High": "high",
+        "Severe": "high",
     }.get(impact_band, "moderate")
 
     st.markdown(
@@ -1916,7 +2005,7 @@ def show_prediction_result() -> None:
                         <div class="impact-meter-track">
                             <div class="impact-meter-fill {fill_class}" style="width: {impact_score}%;"></div>
                         </div>
-                        <div class="impact-meter-note">{impact_band} impact based on magnitude and depth.</div>
+                        <div class="impact-meter-note">{impact_band} impact based on the trained model.</div>
                     </div>
                 </div>
                 <div class="result-card-side">
@@ -1959,6 +2048,14 @@ def show_prediction_result() -> None:
                 <div class="metric-box">
                     <h3>Coordinates</h3>
                     <p>{prediction["latitude"]:.4f}, {prediction["longitude"]:.4f}</p>
+                </div>
+                <div class="metric-box">
+                    <h3>Fault Proximity</h3>
+                    <p>{prediction["fault_proximity"]:.1f} km</p>
+                </div>
+                <div class="metric-box">
+                    <h3>High-Impact Probability</h3>
+                    <p>{prediction["high_impact_probability"] * 100:.1f}%</p>
                 </div>
             </div>
         </div>
@@ -2115,6 +2212,13 @@ def main_app() -> None:
                 step=0.0001,
                 format="%.4f",
             )
+            fault_proximity = st.number_input(
+                "Fault Proximity (km)",
+                min_value=0.0,
+                max_value=120.0,
+                value=24.0,
+                step=1.0,
+            )
         submitted = st.button(
             "Predict Impact",
             width="stretch",
@@ -2129,6 +2233,7 @@ def main_app() -> None:
                     depth=depth,
                     latitude=latitude,
                     longitude=longitude,
+                    fault_proximity=fault_proximity,
                 )
 
         st.markdown(
@@ -2136,15 +2241,15 @@ def main_app() -> None:
             <div class="mini-grid">
                 <div class="info-card mini-card">
                     <h4>Magnitude Logic</h4>
-                    <p>Above 6.0 moves the event into the high-risk band immediately.</p>
+                    <p>Magnitude is encoded by the trained category bands and interaction features.</p>
                 </div>
                 <div class="info-card mini-card">
                     <h4>Depth Effect</h4>
-                    <p>Shallow events below 70 km increase the expected surface impact.</p>
+                    <p>Shallow events below 70 km are encoded as a stronger surface-impact signal.</p>
                 </div>
                 <div class="info-card mini-card">
-                    <h4>Score Tuning</h4>
-                    <p>The final 0-100 score is softened slightly so the result stays conservative.</p>
+                    <h4>Fault Proximity</h4>
+                    <p>Near-fault locations are encoded with the same bands used during training.</p>
                 </div>
             </div>
             """,
